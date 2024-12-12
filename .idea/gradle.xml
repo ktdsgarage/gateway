@@ -12,6 +12,7 @@
             <option value="$PROJECT_DIR$/billing" />
             <option value="$PROJECT_DIR$/common" />
             <option value="$PROJECT_DIR$/inquiry" />
+            <option value="$PROJECT_DIR$/report" />
             <option value="$PROJECT_DIR$/scg" />
             <option value="$PROJECT_DIR$/tech" />
           </set>
