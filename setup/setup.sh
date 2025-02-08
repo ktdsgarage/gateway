@@ -1,5 +1,7 @@
 #!/bin/bash
 
+SHARED_PREFIX="dg0100"  #실습 시 tiu-dgga로 변경
+
 # ===========================================
 # Gateway Pattern 실습환경 구성 스크립트
 # ===========================================
@@ -57,20 +59,18 @@ check_azure_cli() {
 
 # 환경 변수 설정
 echo "=== 1. 환경 변수 설정 ==="
-NAME="${1}-gateway"
-RESOURCE_GROUP="tiu-dgga-rg"
-VNET_NAME="tiu-dgga-vnet"
-LOCATION="koreacentral"
-AKS_NAME="${1}-aks"
-ACR_NAME="${1}cr"
-NAMESPACE="${1}-gateway"
+USERID=$1
+NAME="${USERID}-gateway"
+RESOURCE_GROUP="${SHARED_PREFIX}-rg"
 
-SUBNET_APP="tiu-dgga-pri-snet"
-SUBNET_DB="tiu-dgga-db-snet"
+AKS_NAME="${USERID}-aks"
+ACR_NAME="${USERID}cr"
+NAMESPACE="${USERID}-gateway"
 
 LOG_FILE="deployment_${NAME}.log"
 
 SERVICES=("scg" "inquiry" "tech" "billing")
+SERVER_PORT="8080"
 
 # MongoDB 설정
 MONGODB_PORT=27017
@@ -85,36 +85,6 @@ setup_namespace() {
    log "Namespace 생성 중..."
    kubectl create namespace $NAMESPACE 2>/dev/null || true
    log "Namespace $NAMESPACE 생성 완료"
-}
-
-# ACR pull 권한 설정
-setup_acr_permission() {
-    log "ACR pull 권한 확인 중..."
-
-    # AKS의 service principal 확인
-    SP_ID=$(az aks show \
-        --name $AKS_NAME \
-        --resource-group $RESOURCE_GROUP \
-        --query servicePrincipalProfile.clientId -o tsv)
-    log "SP_ID-->${SP_ID}"
-    if [ "${SP_ID}" = "msi" ]; then
-        log "AKS가 Managed Identity를 사용하고 있습니다."
-        # ACR 권한이 이미 있다고 가정하고 진행
-        log "ACR pull 권한이 이미 설정되어 있다고 가정합니다."
-    else
-        log "Service Principal을 사용하는 AKS입니다. ACR 권한을 확인합니다..."
-        # ACR ID 가져오기
-        ACR_ID=$(az acr show --name $ACR_NAME --resource-group $RESOURCE_GROUP --query "id" -o tsv)
-        check_error "ACR ID 조회 실패"
-
-        # AKS에 ACR pull 권한 부여
-        log "ACR pull 권한 설정 중..."
-        az aks update \
-            --name $AKS_NAME \
-            --resource-group $RESOURCE_GROUP \
-            --attach-acr $ACR_ID 2>/dev/null || true
-        check_error "ACR pull 권한 부여 실패"
-    fi
 }
 
 # 애플리케이션 빌드 및 이미지 생성
@@ -137,21 +107,45 @@ build_and_push_images() {
        log "Building $SERVICE image..."
 
        # Dockerfile 생성
-       cat > $SERVICE/Dockerfile << EOL
+       cat > $SERVICE/Dockerfile << EOF
 FROM eclipse-temurin:17-jdk-alpine
 COPY build/libs/${SERVICE}.jar app.jar
 ENTRYPOINT ["java","-jar","/app.jar"]
-EOL
+EOF
 
        # 이미지 빌드 및 푸시
-       docker build -t $ACR_NAME.azurecr.io/$NAME-$SERVICE:latest ./$SERVICE
-       check_error "$SERVICE 도커 이미지 빌드 실패"
-
-       docker push $ACR_NAME.azurecr.io/$NAME-$SERVICE:latest
-       check_error "$SERVICE 도커 이미지 푸시 실패"
+       	cd "${SERVICE}"
+       	az acr build \
+       		--registry $ACR_NAME \
+       		--image "gateway/${SERVICE}:v1" \
+       		--file Dockerfile \
+       		.
+       	cd ..
 
        log "$SERVICE 이미지 생성 완료"
    done
+}
+
+# 기존 리소스 정리
+cleanup_resources() {
+   log "기존 리소스 정리 중..."
+
+   # 기존 서비스 삭제
+   for SERVICE in "${SERVICES[@]}"; do
+       kubectl delete deployment $SERVICE -n $NAMESPACE 2>/dev/null || true
+       log "$SERVICE 리소스 삭제 완료"
+   done
+
+   # MongoDB 리소스 삭제
+   local DB_SERVICES=("inquiry" "tech" "billing")
+   for SERVICE in "${DB_SERVICES[@]}"; do
+       kubectl delete statefulset mongodb-$SERVICE -n $NAMESPACE 2>/dev/null || true
+       log "$SERVICE MongoDB 리소스 삭제 완료"
+   done
+
+   # 잠시 대기하여 리소스가 완전히 삭제되도록 함
+   log "리소스 정리 완료 대기 중..."
+   sleep 10
 }
 
 # MongoDB 구성
@@ -166,7 +160,7 @@ setup_mongodb() {
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
- name: $NAME-mongodb-$SERVICE
+ name: mongodb-$SERVICE
  namespace: $NAMESPACE
 spec:
  serviceName: mongodb-$SERVICE
@@ -195,7 +189,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
- name: $NAME-mongodb-$SERVICE
+ name: mongodb-$SERVICE
  namespace: $NAMESPACE
 spec:
  selector:
@@ -209,14 +203,33 @@ EOF
    done
 }
 
+# ConfigMap 생성 함수
+setup_configmap() {
+    log "ConfigMap 생성 중..."
+
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: $NAME-config
+  namespace: $NAMESPACE
+data:
+  INQUIRY_SERVICE_HOST: "inquiry"
+  INQUIRY_SERVICE_PORT: "${SERVER_PORT}"
+  TECH_SERVICE_HOST: "tech"
+  TECH_SERVICE_PORT: "${SERVER_PORT}"
+  BILLING_SERVICE_HOST: "billing"
+  BILLING_SERVICE_PORT: "${SERVER_PORT}"
+EOF
+    check_error "ConfigMap 생성 실패"
+}
+
 setup_services() {
     log "마이크로서비스 배포 중..."
 
-    local PORTS=(8080 8081 8082 8083)
-
     for i in "${!SERVICES[@]}"; do
         local SERVICE=${SERVICES[$i]}
-        local PORT=${PORTS[$i]}
+        local PORT=${SERVER_PORT}
         local DB_NAME=""
         local YAML_FILE="service_${SERVICE}.yaml"
 
@@ -230,7 +243,7 @@ setup_services() {
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: $NAME-$SERVICE
+  name: $SERVICE
   namespace: $NAMESPACE
 spec:
   replicas: 1
@@ -244,7 +257,7 @@ spec:
     spec:
       containers:
       - name: $SERVICE
-        image: $ACR_NAME.azurecr.io/$NAME-$SERVICE:latest
+        image: $ACR_NAME.azurecr.io/gateway/$SERVICE:v1
         imagePullPolicy: Always
         ports:
         - containerPort: $PORT
@@ -258,7 +271,7 @@ EOF
         if [ "$SERVICE" != "scg" ]; then
             cat >> $YAML_FILE << EOF
         - name: MONGODB_HOST
-          value: "$NAME-mongodb-$SERVICE"
+          value: "mongodb-$SERVICE"
         - name: MONGODB_PORT
           value: "$MONGODB_PORT"
         - name: MONGODB_USER
@@ -278,7 +291,7 @@ EOF
 apiVersion: v1
 kind: Service
 metadata:
-  name: $NAME-$SERVICE
+  name: $SERVICE
   namespace: $NAMESPACE
 spec:
   selector:
@@ -298,51 +311,8 @@ EOF
     done
 
     # Gateway Service만 LoadBalancer로 노출
-    kubectl patch svc $NAME-scg -n $NAMESPACE -p '{"spec": {"type": "LoadBalancer"}}'
+    kubectl patch svc scg -n $NAMESPACE -p '{"spec": {"type": "LoadBalancer"}}'
     check_error "Gateway Service LoadBalancer 설정 실패"
-}
-
-# 기존 리소스 정리
-cleanup_resources() {
-   log "기존 리소스 정리 중..."
-
-   # 기존 서비스 삭제
-   for SERVICE in "${SERVICES[@]}"; do
-       kubectl delete deployment $NAME-$SERVICE -n $NAMESPACE 2>/dev/null || true
-       log "$SERVICE 리소스 삭제 완료"
-   done
-
-   # MongoDB 리소스 삭제
-   local DB_SERVICES=("inquiry" "tech" "billing")
-   for SERVICE in "${DB_SERVICES[@]}"; do
-       kubectl delete statefulset $NAME-mongodb-$SERVICE -n $NAMESPACE 2>/dev/null || true
-       log "$SERVICE MongoDB 리소스 삭제 완료"
-   done
-
-   # 잠시 대기하여 리소스가 완전히 삭제되도록 함
-   log "리소스 정리 완료 대기 중..."
-   sleep 10
-}
-
-# ConfigMap 생성 함수
-setup_configmap() {
-    log "ConfigMap 생성 중..."
-
-    cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: $NAME-config
-  namespace: $NAMESPACE
-data:
-  INQUIRY_SERVICE_HOST: "$NAME-inquiry"
-  INQUIRY_SERVICE_PORT: "8081"
-  TECH_SERVICE_HOST: "$NAME-tech"
-  TECH_SERVICE_PORT: "8082"
-  BILLING_SERVICE_HOST: "$NAME-billing"
-  BILLING_SERVICE_PORT: "8083"
-EOF
-    check_error "ConfigMap 생성 실패"
 }
 
 # LoadBalancer IP 대기
@@ -353,7 +323,7 @@ wait_for_lb_ip() {
    local APP_HOST=""
 
    while [ $retries -lt $max_retries ]; do
-       APP_HOST=$(kubectl get svc $NAME-scg -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+       APP_HOST=$(kubectl get svc scg -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
        if [ ! -z "$APP_HOST" ]; then
            log "LoadBalancer IP 할당 완료: $APP_HOST"
            GATEWAY_HOST=$APP_HOST
@@ -375,9 +345,6 @@ main() {
    # 사전 체크
    check_azure_cli
 
-   # ACR pull 권한 설정
-   setup_acr_permission
-
    # Namespace 생성
    setup_namespace
 
@@ -398,10 +365,10 @@ main() {
 
    log "=== Gateway 연결 정보 ==="
    log "Host: $GATEWAY_HOST"
-   log "Port: 8080"
+   log "Port: ${SERVER_PORT}"
 
    log "=== 서비스 테스트 페이지 ==="
-   log "http://$GATEWAY_HOST:8080/static/index.html"
+   log "http://$GATEWAY_HOST:${SERVER_PORT}/static/index.html"
 }
 
 # 스크립트 시작

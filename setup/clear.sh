@@ -1,5 +1,7 @@
 #!/bin/bash
 
+SHARED_PREFIX="dg0100"  #실습 시 tiu-dgga로 변경
+
 # ===========================================
 # Gateway Pattern 실습환경 정리 스크립트
 # ===========================================
@@ -38,7 +40,7 @@ fi
 
 # 환경 변수 설정
 NAME="${1}-gateway"
-RESOURCE_GROUP="tiu-dgga-rg"
+RESOURCE_GROUP="${SHARED_PREFIX}-rg"
 AKS_NAME="${1}-aks"
 ACR_NAME="${1}cr"
 NAMESPACE="${1}-gateway"
@@ -71,16 +73,16 @@ cleanup_k8s_resources() {
 
    # 서비스 삭제
    for SERVICE in "${SERVICES[@]}"; do
-       kubectl delete service $NAME-$SERVICE -n $NAMESPACE 2>/dev/null || true
-       kubectl delete deployment $NAME-$SERVICE -n $NAMESPACE 2>/dev/null || true
+       kubectl delete service $SERVICE -n $NAMESPACE 2>/dev/null || true
+       kubectl delete deployment $SERVICE -n $NAMESPACE 2>/dev/null || true
        log "$SERVICE 리소스 삭제 완료"
    done
 
    # MongoDB StatefulSet 및 서비스 삭제
    local DB_SERVICES=("inquiry" "tech" "billing")
    for SERVICE in "${DB_SERVICES[@]}"; do
-       kubectl delete service $NAME-mongodb-$SERVICE -n $NAMESPACE 2>/dev/null || true
-       kubectl delete statefulset $NAME-mongodb-$SERVICE -n $NAMESPACE 2>/dev/null || true
+       kubectl delete service mongodb-$SERVICE -n $NAMESPACE 2>/dev/null || true
+       kubectl delete statefulset mongodb-$SERVICE -n $NAMESPACE 2>/dev/null || true
        log "$SERVICE MongoDB 리소스 삭제 완료"
    done
 
