@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SHARED_PREFIX="dg0100"  #실습 시 tiu-dgga로 변경
+RESOURCE_GROUP="ictcoe-edu" #az group list -o table
 
 # ===========================================
 # Gateway Pattern 실습환경 구성 스크립트
@@ -61,7 +61,6 @@ check_azure_cli() {
 echo "=== 1. 환경 변수 설정 ==="
 USERID=$1
 NAME="${USERID}-gateway"
-RESOURCE_GROUP="${SHARED_PREFIX}-rg"
 
 AKS_NAME="${USERID}-aks"
 ACR_NAME="${USERID}cr"

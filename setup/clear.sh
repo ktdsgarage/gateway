@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SHARED_PREFIX="dg0100"  #실습 시 tiu-dgga로 변경
+RESOURCE_GROUP="ictcoe-edu" #az group list -o table
 
 # ===========================================
 # Gateway Pattern 실습환경 정리 스크립트
@@ -40,7 +40,6 @@ fi
 
 # 환경 변수 설정
 NAME="${1}-gateway"
-RESOURCE_GROUP="${SHARED_PREFIX}-rg"
 AKS_NAME="${1}-aks"
 ACR_NAME="${1}cr"
 NAMESPACE="${1}-gateway"
